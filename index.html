@@ -1466,7 +1466,7 @@ function isPreview() {
 }
 const PREVIEW = isPreview();
 
-let ctx = null, masterGain = null;
+let ctx = null, masterGain = null, outNode = null, bgEl = null;
 const live = {};   // id -> {gain, src, stop, rec: false | "stream" | true, stream?: {el, clip}}
 
 function ensureCtx() {
@@ -1474,9 +1474,35 @@ function ensureCtx() {
     ctx = new (window.AudioContext || window.webkitAudioContext)();
     masterGain = ctx.createGain();
     masterGain.gain.value = getMaster();
-    masterGain.connect(ctx.destination);
+    outNode = ctx.destination;
+    // Mobile browsers suspend a bare AudioContext when the page is hidden.
+    // Piping the mix into a media element makes it "media playback", which
+    // keeps running in the background / on the lock screen.
+    if (ctx.createMediaStreamDestination && /Android|iPhone|iPad|iPod|Mobi/i.test(navigator.userAgent)) {
+      try {
+        const dest = ctx.createMediaStreamDestination();
+        bgEl = document.createElement("audio");
+        bgEl.setAttribute("playsinline", ""); bgEl.autoplay = true;
+        bgEl.srcObject = dest.stream;
+        outNode = dest;
+      } catch (e) { bgEl = null; outNode = ctx.destination; }
+    }
+    masterGain.connect(outNode);
+    try { if (navigator.audioSession) navigator.audioSession.type = "playback"; } catch (e) {}
+    if ("mediaSession" in navigator) {
+      try {
+        navigator.mediaSession.metadata = new MediaMetadata({ title: "Open Relax", artist: "ambient mix" });
+        navigator.mediaSession.setActionHandler("play", () => { ensureCtx(); });
+        navigator.mediaSession.setActionHandler("pause", () => { if (ctx) ctx.suspend(); if (bgEl) bgEl.pause(); });
+      } catch (e) {}
+    }
+    document.addEventListener("visibilitychange", () => {
+      if (ctx && ctx.state !== "running" && ctx.state !== "closed") ctx.resume().catch(() => {});
+      if (bgEl && bgEl.paused) bgEl.play().catch(() => {});
+    });
   }
   if (ctx.state === "suspended") ctx.resume();
+  if (bgEl && bgEl.paused) bgEl.play().catch(() => {});
 }
 
 // ---------- synth: the layer builders ----------
@@ -2771,7 +2797,7 @@ function ensureVerb() {
 function cue(hz, soft) {
   if (!hz || !document.getElementById("exCue").checked) return;
   ensureCtx();
-  if (!cueGain) { cueGain = ctx.createGain(); cueGain.gain.value = .28; cueGain.connect(ctx.destination); }
+  if (!cueGain) { cueGain = ctx.createGain(); cueGain.gain.value = .28; cueGain.connect(outNode || ctx.destination); }
   const verb = ensureVerb();
   const t = ctx.currentTime;
   const level = soft ? .5 : .75;
